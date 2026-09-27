@@ -11,11 +11,38 @@
  * Learn more at https://developers.cloudflare.com/workers/
  */
 
-import { timingSafeEqual } from "node:crypto";
-
 export interface Env {
 	TALLY_SIGNING_SECRET: string;
+	HUBSPOT_TOKEN: string;
+	SLACK_WEBHOOK_URL: string;
+	EVENTS_QUEUE: Queue;
 }
+interface TallyField {
+	key: string;
+	label: string;
+	type: string;
+	value: unknown;
+}
+
+interface TallyPayload {
+	eventId: string;
+	eventType: string;
+	data: { fields: TallyField[]}
+}
+
+interface QueuedEvent {
+	source: "tally";
+	eventId: string;
+	payload: TallyPayload;
+}
+
+// Maps Tally fields labels -> HubSpot contact properties.
+// This is the bit that changes per client/form - nothing else should.
+const TALLY_FIELD_MAP: Record<string, string> = {
+	"Email": "email",
+	"First Name": "firstname",
+	"Last Name": "lastname",
+};
 
 async function verifyTallySignature(
 	rawBody: string,
@@ -45,6 +72,61 @@ function timingSafeEqual(a: string, b: string): boolean {
 	return mismatch === 0;
 }
 
+function mapTallyFields(fields: TallyField[]): Record<string, string> {
+	const properties: Record<string, string> = {};
+	for (const field of fields){
+		const hubspotProp = TALLY_FIELD_MAP[field.label];
+		if (hubspotProp && typeof field.value === "string") {
+			properties[hubspotProp] = field.value;
+		}
+	}
+	return properties;
+}
+
+async function upsertHubSpotContact(email:string, properties: Record<string, string>, env: Env): Promise<void> {
+	const res = await fetch("https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${env.HUBSPOT_TOKEN}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			inputs: [{id: email, idProperty: "email", properties}],
+		}),
+	});
+
+	if (!res.ok) {
+		throw new Error(`Hubspot upsert failed: ${res.status} ${await res.text()}`);
+	}
+	
+}
+
+async function postSlackMessage(text: string, env: Env): Promise<void> {
+	const res = await fetch(env.SLACK_WEBHOOK_URL, {
+		method: "POST",
+		headers: {"Content-Type": "application/json"},
+		body: JSON.stringify({ text }),
+	});
+
+	if (!res.ok) {
+		throw new Error(`Slack psot failed: ${res.status} ${await res.text()}`);
+	}
+}
+
+async function  ProcessTallyEvent(payload:TallyPayload, env: Env): Promise<void> {
+	const fields = payload.data?.fields ?? [];
+	const properties = mapTallyFields(fields);
+
+	const email = properties.email;
+	if (!email) throw new Error ("No email field found - check TALLY_FIELD_MAP matches your form's lables");
+
+	await upsertHubSpotContact(email, properties, env);
+
+	const firstName = properties.firstname ?? "someone";
+	await postSlackMessage(`New enquiry from ${firstName}`, env);
+	
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
@@ -58,12 +140,29 @@ export default {
 				console.log("Bad Tally signature");
 				return new Response("Invalid signature", { status: 401 });
 			}
+			
+			const payload = JSON.parse(rawBody) as TallyPayload;
+			await env.EVENTS_QUEUE.send({ source: "tally", eventId: payload.eventId, payload});
+			
+			return new Response("OK", { status: 200});
 
-			console.log("Tally payload shape:", rawBody); // remove once you've seen it
-
-			return new Response("OK", { status: 200 });
 		}
 
 		return new Response("Not found", { status: 404 });
 	},
+
+	async queue(batch: MessageBatch<QueuedEvent>, env: Env): Promise<void> {
+		for (const message of batch.messages) {
+			try{
+				if (message.body.source === "tally"){
+					await ProcessTallyEvent(message.body.payload, env);
+				}
+				message.ack();
+			} catch (err) {
+				console.log("Event processing failed: ", err);
+				message.retry();
+			}
+		}
+	},
+
 };

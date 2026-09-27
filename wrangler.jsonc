@@ -1,5 +1,5 @@
 /**
- * For more details on how to configure Wrangler, refer to:
+ * F4or more details on how to configure Wrangler, refer to:
  * https://developers.cloudflare.com/workers/wrangler/configuration/
  */
 {
@@ -10,7 +10,18 @@
 	"observability": {
 		"enabled": true
 	},
-	"upload_source_maps": true
+	"upload_source_maps": true,
+	
+	"queues": {
+	"producers": [
+		{ "queue": "demo-events", "binding": "EVENTS_QUEUE" }
+	],
+	"consumers": [
+		{ "queue": "demo-events", "max_batch_size": 10, "max_retries": 3 }
+	]
+	}
+
+
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
