@@ -1,0 +1,10 @@
+{
+  "eventId": "test-1",
+  "eventType": "FORM_RESPONSE",
+  "data": {
+    "fields": [
+      { "key": "q1", "label": "Email", "type": "INPUT_EMAIL", "value": "bjorn+test1@bjorngreen.dev" },
+      { "key": "q2", "label": "First Name", "type": "INPUT_TEXT", "value": "Alice" }
+    ]
+  }
+}

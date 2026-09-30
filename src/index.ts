@@ -13,6 +13,7 @@
 
 export interface Env {
 	TALLY_SIGNING_SECRET: string;
+	CAL_SIGINGING_SECET: string;
 	HUBSPOT_TOKEN: string;
 	SLACK_WEBHOOK_URL: string;
 	EVENTS_QUEUE: Queue;
@@ -24,17 +25,41 @@ interface TallyField {
 	value: unknown;
 }
 
+interface CalAttendee {
+	email: string;
+	name: string:
+}
+
+interface CalPayload {
+	triggerEvent: string;
+	createdAt: string;
+	Payload: {
+		uid: string;
+		startTime: string;
+		attendees: CalAttendee[];
+	};
+}
+
 interface TallyPayload {
 	eventId: string;
 	eventType: string;
 	data: { fields: TallyField[]}
 }
 
-interface QueuedEvent {
+interface QueuedTallyEvent {
 	source: "tally";
 	eventId: string;
 	payload: TallyPayload;
 }
+
+
+interface QueuedCalEvent {
+	source: "cal";
+	eventId: string;
+	payload: CalPayload;
+}
+
+type QueuedEvent = QueuedTallyEvent | QueuedCalEvent;
 
 // Maps Tally fields labels -> HubSpot contact properties.
 // This is the bit that changes per client/form - nothing else should.
@@ -64,6 +89,36 @@ async function verifyTallySignature(
 
 	return timingSafeEqual(expected, signatureHeader);
 }
+
+async function verifyCalSignature(
+	rawBody: string,
+	signatureHeader: string | null,
+	secret: string
+): Promise<boolean> {
+		if (!signatureHeader) return false;
+
+		const key = await crypto.subtle.importKey(
+			"raw",
+			new TextEncoder().encode(secret),
+			{name: "HMAC", hash: "SHA-256"},
+			false,
+			["sign"]
+		);
+
+		const mac = await crypto.subtle.sign("HMAC", key new TextEncoder().encode(rawBody));
+		const expected = toHex(new Uint8Array(mac));
+
+		return timingSafeEqual(expected, signatureHeader);
+
+	}
+
+	function toHex(bytes: Uint8Array): string {
+		return Array.from(bytes)
+			.map((b) =>.toString(16).padStart(2, "0"))
+			.join("");
+	}
+	
+
 
 function timingSafeEqual(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
@@ -98,7 +153,9 @@ async function upsertHubSpotContact(email:string, properties: Record<string, str
 	if (!res.ok) {
 		throw new Error(`Hubspot upsert failed: ${res.status} ${await res.text()}`);
 	}
-	
+
+	const data = (await res.json()) as { results { id: string }[] };
+	return data.results[0].id;
 }
 
 async function postSlackMessage(text: string, env: Env): Promise<void> {
